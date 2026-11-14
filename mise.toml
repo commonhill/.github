@@ -11,3 +11,7 @@ uv = "0.13.1"
 [tasks.lint]
 description = "actionlint (with shellcheck) over .github/workflows"
 run = "actionlint"
+
+[tasks.selftest]
+description = "pytest.yml's plumbing (ci/selftest.sh)"
+run = "ci/selftest.sh"

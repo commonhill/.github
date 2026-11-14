@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # This repository's CI, through its own reusable workflows on GitHub's runners: static.yml (the
-# workflows linted, every file's licence) and check.yml without a gate.
+# workflows linted, every file's licence), pytest.yml's plumbing in two shards (ci/selftest.sh),
+# and check.yml gated by a `changes` job, as core's is. image.yml and readiness.yml need a
+# repository with images or a project: their callers run them.
 name: ci
 
 on:
@@ -13,16 +15,48 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      static: ${{ steps.decide.outputs.static }}
+      tests: ${{ steps.decide.outputs.tests }}
+      never: ${{ steps.decide.outputs.never }}
+    steps:
+      - id: decide
+        run: printf 'static=true\ntests=true\nnever=false\n' >> "$GITHUB_OUTPUT"
+
   static:
+    needs: changes
+    if: needs.changes.outputs.static == 'true'
     uses: ./.github/workflows/static.yml
     with: { tasks: lint, runs-on: ubuntu-latest }
 
+  tests:
+    needs: changes
+    if: needs.changes.outputs.tests == 'true'
+    uses: ./.github/workflows/pytest.yml
+    with:
+      task: selftest
+      args: one two
+      shards: "[1, 2]"
+      durations: selftest-durations
+      mirrors: false
+      runs-on: ubuntu-latest
+      timeout-minutes: 10
+
+  # Never wanted: check.yml must see it skipped.
+  never:
+    needs: changes
+    if: needs.changes.outputs.never == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: exit 1
+
   check:
     if: always()
-    needs: [static]
+    needs: [changes, static, tests, never]
     uses: ./.github/workflows/check.yml
     with:
       needs: ${{ toJSON(needs) }}
-      wanted: '{"static": true}'
-      gate: ""
+      wanted: '{"static": "static", "tests": "tests", "never": "never"}'
       runs-on: ubuntu-latest
