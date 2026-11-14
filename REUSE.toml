@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Blazelight Pty Ltd
+# SPDX-License-Identifier: Apache-2.0
+#
+# Every file here carries its licence in its SPDX header; `reuse lint` checks them.
+version = 1
