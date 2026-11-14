@@ -1,0 +1,154 @@
+# SPDX-FileCopyrightText: 2026 Blazelight Pty Ltd
+# SPDX-License-Identifier: Apache-2.0
+#
+# A repository's tests as one of its mise tasks runs them (`test:rest`, `test:docker`, ...), in
+# shards side by side, each in a runner pod and Docker daemon of its own (PER-477). Each shard gets
+# ARH_TEST_SHARD=i/n: the caller's root conftest gives it its files, balanced by their recorded
+# durations (ci/test-durations.json, and ci/test-unit-durations.json for longest-first ordering),
+# and each records this run's durations as an artifact that `mise run test:durations` folds in.
+# The job gets the caller's token permissions (no `permissions` here): a caller with
+# `image_cache: true` grants `packages: write`.
+#
+#   test-rest:
+#     needs: changes
+#     uses: commonhill/.github/.github/workflows/pytest.yml@v1
+#     with:
+#       task: test:rest
+#       args: ${{ needs.changes.outputs.rest_files }}
+#       shards: ${{ needs.changes.outputs.rest_shards }}
+on:
+  workflow_call:
+    inputs:
+      task:
+        description: the mise task that runs the tests
+        type: string
+        required: true
+      args:
+        description: its arguments (space-separated, after `--`), e.g. the test files to run
+        type: string
+        default: ""
+      shards:
+        description: the shards, a JSON array of 1..n (strategy.job-total is n)
+        type: string
+        default: "[1]"
+      durations:
+        description: >-
+          the durations artifact's prefix: shard i writes <prefix>-<i>.json (ARH_TEST_DURATIONS_OUT)
+          and uploads it as artifact <prefix>-<i>; empty records none
+        type: string
+        default: test-durations
+      unit_durations:
+        description: >-
+          the per-test durations' prefix (ARH_TEST_UNIT_DURATIONS_OUT, <prefix>-<i>.json in the same
+          artifact); empty records none
+        type: string
+        default: ""
+      changed:
+        description: a JSON array of the paths a branch changed (ARH_TEST_CHANGED); `[]` for none
+        type: string
+        default: "[]"
+      image_cache:
+        description: >-
+          take the tests' content-keyed images from ghcr.io/<repository>/ci-cache and push the ones
+          built (ARH_TEST_IMAGE_CACHE, PER-477 phase 5); needs `packages: write`
+        type: boolean
+        default: false
+      mirrors:
+        description: the home-k8s package proxy's PyPI and crates mirrors for the tests' builds (off on GitHub's runners)
+        type: boolean
+        default: true
+      deadline_minutes:
+        description: >-
+          >0: a run still going after this long names its running tests and stops
+          (ARH_TEST_DEADLINE_S), and `timeout` kills it 10 minutes later
+        type: number
+        default: 0
+      timeout-minutes:
+        description: the job's limit; 120, as a passing shard on an overloaded node needs (PER-344)
+        type: number
+        default: 120
+      runs-on:
+        description: the runner label
+        type: string
+        default: commonhill
+      cache_key_prefix:
+        description: mise-action's cache key prefix, where the runner has no node-local tools
+        type: string
+        default: mise-py
+      disable_tools:
+        description: MISE_DISABLE_TOOLS, the caller's tools these tests don't need
+        type: string
+        default: ""
+
+jobs:
+  pytest:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.shards) }}
+    env:
+      ARH_TEST_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+      ARH_TEST_DURATIONS_OUT: ${{ inputs.durations != '' && format('{0}-{1}.json', inputs.durations, matrix.shard) || '' }}
+      ARH_TEST_UNIT_DURATIONS_OUT: ${{ inputs.unit_durations != '' && format('{0}-{1}.json', inputs.unit_durations, matrix.shard) || '' }}
+      MISE_DISABLE_TOOLS: ${{ inputs.disable_tools }}
+      # The venv links into the runner's uv cache instead of copying out of it (5-13 s a job,
+      # against 13-55 s copying).
+      UV_LINK_MODE: symlink
+      # The test databases skip their flushes: every test drops a database, each drop a checkpoint
+      # on a disk the node's jobs share.
+      ARH_PG_DURABLE: "off"
+      # The tests' pip, uv and cargo downloads through the package proxy (deploy/proxy), as a build
+      # VM's: an empty Docker daemon's builds otherwise fetch everything over the WAN (PER-304,
+      # PER-457). The root conftest's `mirror_build_args` passes them to every build.
+      ARH_TEST_PIP_INDEX: ${{ inputs.mirrors && 'http://package-proxy.arh-proxy.svc.cluster.local:8080/pypi/simple/' || '' }}
+      ARH_TEST_PYPI_FILES: ${{ inputs.mirrors && 'http://package-proxy.arh-proxy.svc.cluster.local:8080/pypi/files/' || '' }}
+      ARH_TEST_CARGO_MIRROR: ${{ inputs.mirrors && 'sparse+http://package-proxy.arh-proxy.svc.cluster.local:8080/crates/index/' || '' }}
+      ARH_TEST_IMAGE_CACHE: ${{ inputs.image_cache && format('ghcr.io/{0}/ci-cache', github.repository) || '' }}
+      ARH_TEST_IMAGE_CACHE_PUSH: ${{ inputs.image_cache && '1' || '' }}
+      # No bytecode beside the sources: a build context with __pycache__ in it has another key every run.
+      PYTHONDONTWRITEBYTECODE: ${{ inputs.image_cache && '1' || '' }}
+    steps:
+      - uses: actions/checkout@v7
+      - if: inputs.image_cache
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - if: inputs.changed != '[]'
+        env:
+          CHANGED: ${{ inputs.changed }}
+        run: |
+          jq -r '.[]' <<<"$CHANGED" > "$RUNNER_TEMP/changed.txt"
+          echo "ARH_TEST_CHANGED=$RUNNER_TEMP/changed.txt" >> "$GITHUB_ENV"
+      - uses: commonhill/.github/actions/setup@v1
+        with: { cache_key_prefix: "${{ inputs.cache_key_prefix }}" }
+      # The node's load before and after (the pod shares it): CI time is sizing and contention.
+      - run: echo "node load $(cut -d' ' -f1-3 /proc/loadavg), $(nproc) CPUs"
+      - env:
+          TASK: ${{ inputs.task }}
+          ARGS: ${{ inputs.args }}
+          DEADLINE: ${{ inputs.deadline_minutes }}
+        # ARGS unquoted: a space-separated list. With a deadline, `timeout` is the backstop if
+        # pytest itself hangs past it.
+        run: |
+          # shellcheck disable=SC2086
+          if (( DEADLINE > 0 )); then
+            export ARH_TEST_DEADLINE_S=$(( DEADLINE * 60 ))
+            timeout --kill-after=1m "$(( DEADLINE + 10 ))m" mise run "$TASK" -- $ARGS
+          else
+            mise run "$TASK" -- $ARGS
+          fi
+      - if: always()
+        run: echo "node load $(cut -d' ' -f1-3 /proc/loadavg), $(nproc) CPUs"
+      - if: always() && inputs.durations != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.durations }}-${{ matrix.shard }}
+          path: |
+            ${{ env.ARH_TEST_DURATIONS_OUT }}
+            ${{ env.ARH_TEST_UNIT_DURATIONS_OUT }}
+          retention-days: 30
+          if-no-files-found: ignore

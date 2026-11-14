@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 Blazelight Pty Ltd
+# SPDX-License-Identifier: Apache-2.0
+#
+# This repository's CI, through its own reusable workflows on GitHub's runners: static.yml (the
+# workflows linted, every file's licence) and check.yml without a gate.
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    uses: ./.github/workflows/static.yml
+    with: { tasks: lint, runs-on: ubuntu-latest }
+
+  check:
+    if: always()
+    needs: [static]
+    uses: ./.github/workflows/check.yml
+    with:
+      needs: ${{ toJSON(needs) }}
+      wanted: '{"static": true}'
+      gate: ""
+      runs-on: ubuntu-latest

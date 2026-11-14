@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 Blazelight Pty Ltd
+# SPDX-License-Identifier: Apache-2.0
+#
+# This repository's own checks (.github/workflows/ci.yml, through static.yml): actionlint over the
+# workflows, shellcheck over their scripts, and `reuse lint` (uv).
+[tools]
+uv = "0.13.1"
+"aqua:rhysd/actionlint" = "1.7.12"
+"aqua:koalaman/shellcheck" = "0.11.0"
+
+[tasks.lint]
+description = "actionlint (with shellcheck) over .github/workflows"
+run = "actionlint"

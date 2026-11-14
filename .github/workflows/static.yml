@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: 2026 Blazelight Pty Ltd
+# SPDX-License-Identifier: Apache-2.0
+#
+# The static checks, one job off the tests' critical path: the repository's mise tasks (lint,
+# typecheck, the guides' copy catalogs in core) and `reuse lint` (every file's licence, REUSE.toml).
+# The caller's mise.toml names the tasks' tools, uv among them (`reuse` runs through uvx).
+#
+#   static:
+#     uses: commonhill/.github/.github/workflows/static.yml@v1
+#     with: { tasks: "lint ::: typecheck ::: copy:check" }
+on:
+  workflow_call:
+    inputs:
+      tasks:
+        description: "what `mise run` gets: tasks joined by ` ::: `; empty runs none"
+        type: string
+        default: "lint ::: typecheck"
+      reuse:
+        description: run `reuse lint` too
+        type: boolean
+        default: true
+      runs-on:
+        description: the runner label (`commonhill` is the org's ARC scale set; `ubuntu-latest` for a fork's PR)
+        type: string
+        default: commonhill
+      cache_key_prefix:
+        description: mise-action's cache key prefix, where the runner has no node-local tools
+        type: string
+        default: mise-static
+      disable_tools:
+        description: MISE_DISABLE_TOOLS, the caller's tools this job needn't install
+        type: string
+        default: ""
+
+jobs:
+  static:
+    runs-on: ${{ inputs.runs-on }}
+    # A stuck step fails the job instead of holding a runner for hours.
+    timeout-minutes: 30
+    env:
+      MISE_DISABLE_TOOLS: ${{ inputs.disable_tools }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: commonhill/.github/actions/setup@v1
+        with: { cache_key_prefix: "${{ inputs.cache_key_prefix }}" }
+      - if: inputs.tasks != ''
+        env:
+          TASKS: ${{ inputs.tasks }}
+        # Unquoted: `:::` and the task names are separate words.
+        run: |
+          # shellcheck disable=SC2086
+          mise run $TASKS
+      - if: inputs.reuse
+        run: mise exec uv -- uvx --from "reuse[charset-normalizer]==6.3.0" reuse lint

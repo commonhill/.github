@@ -1,0 +1,102 @@
+# SPDX-FileCopyrightText: 2026 Blazelight Pty Ltd
+# SPDX-License-Identifier: Apache-2.0
+#
+# A project's readiness report on a local Commonhill: `hill local up` from a Commonhill core
+# checkout at `core_ref`, then `hill local add DIR [--heldout FILE]`, which fails unless the report
+# passes and the project goes live. Templates run it for each kind; any author's project can too.
+# The project directory is copied out of the caller's checkout and committed as a repository of its
+# own (its base), as `hill local add` takes it.
+#
+#   readiness:
+#     strategy: { matrix: { kind: [count, quality, head-to-head, open] } }
+#     uses: commonhill/.github/.github/workflows/readiness.yml@v1
+#     with: { directory: "${{ matrix.kind }}", heldout: "${{ matrix.kind }}-heldout/heldout.json" }
+#     secrets: { core_token: "${{ secrets.CORE_TOKEN }}" }
+on:
+  workflow_call:
+    inputs:
+      directory:
+        description: the project, a directory of the caller's repository
+        type: string
+        required: true
+      heldout:
+        description: its held-out set, a file of the caller's repository; empty for an open project
+        type: string
+        default: ""
+      core_repository:
+        description: the Commonhill core to run
+        type: string
+        default: commonhill/commonhill
+      core_ref:
+        description: its ref (a release tag, or main)
+        type: string
+        default: main
+      timeout-minutes:
+        description: the job's limit; the first `hill local up` on an empty daemon builds every image
+        type: number
+        default: 90
+      runs-on:
+        description: the runner label
+        type: string
+        default: commonhill
+      cache_key_prefix:
+        description: mise-action's cache key prefix, where the runner has no node-local tools
+        type: string
+        default: mise-uv
+    secrets:
+      core_token:
+        description: a token that reads core_repository, while it is private (else the caller's token)
+        required: false
+
+jobs:
+  readiness:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    env:
+      # virtctl and vmalert-tool are for core's cluster tests and alert rules only.
+      MISE_DISABLE_TOOLS: "github:kubevirt/kubevirt,github:VictoriaMetrics/VictoriaMetrics"
+    steps:
+      # Core at the workspace's root (its mise.toml and `hill local up --source .`), the caller's
+      # repository beside it until the project is copied out.
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.core_repository }}
+          ref: ${{ inputs.core_ref }}
+          token: ${{ secrets.core_token || github.token }}
+      - uses: actions/checkout@v7
+        with:
+          path: .project
+      - uses: commonhill/.github/actions/setup@v1
+        with: { cache_key_prefix: "${{ inputs.cache_key_prefix }}" }
+      - env:
+          DIRECTORY: ${{ inputs.directory }}
+          HELDOUT: ${{ inputs.heldout }}
+          GIT_AUTHOR_NAME: commonhill-ci
+          GIT_AUTHOR_EMAIL: ci@commonhill.org
+          GIT_COMMITTER_NAME: commonhill-ci
+          GIT_COMMITTER_EMAIL: ci@commonhill.org
+        run: |
+          project="$RUNNER_TEMP/project"
+          mkdir -p "$project"
+          cp -a ".project/$DIRECTORY/." "$project/"
+          if [[ -n "$HELDOUT" ]]; then
+            cp ".project/$HELDOUT" "$RUNNER_TEMP/heldout"
+          fi
+          rm -rf .project
+          git -C "$project" init --quiet --initial-branch main
+          git -C "$project" add --all
+          git -C "$project" commit --quiet --message "base"
+      - run: uv run hill local up --source .
+        shell: mise exec -- bash -e {0}
+      - env:
+          HELDOUT: ${{ inputs.heldout }}
+        shell: mise exec -- bash -e {0}
+        run: |
+          if [[ -n "$HELDOUT" ]]; then
+            uv run hill local add "$RUNNER_TEMP/project" --heldout "$RUNNER_TEMP/heldout"
+          else
+            uv run hill local add "$RUNNER_TEMP/project"
+          fi
+      - if: always()
+        shell: mise exec -- bash -e {0}
+        run: uv run hill local down --volumes --source . || true

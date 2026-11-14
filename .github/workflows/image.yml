@@ -1,0 +1,126 @@
+# SPDX-FileCopyrightText: 2026 Blazelight Pty Ltd
+# SPDX-License-Identifier: Apache-2.0
+#
+# A repository's images, built and pushed while its tests run (an image of a commit whose tests
+# fail is never deployed, so waiting for them would only add their time to every run). The
+# caller's mise tasks do the work: `image` builds (reusing the registry's layers: ARH_IMAGE_CACHE is
+# `write` on main, `read` elsewhere, PER-342), `image:heldout` fails if a held-out canary planted
+# before the build reached an image, `image:push` pushes and records the digests
+# (ARH_IMAGE_DIGESTS), and `image:retag` tags images another run pushed, given by digest, with this
+# commit instead of building them (a main commit whose tree a passed PR head had, PER-477). The
+# digests are artifact image-digests-<attempt> and the output `digests`. Needs `packages: write`.
+#
+#   image:
+#     needs: changes
+#     uses: commonhill/.github/.github/workflows/image.yml@v1
+#     with: { retag_images: "${{ needs.changes.outputs.retag }}" }
+#     permissions: { contents: read, packages: write }
+on:
+  workflow_call:
+    inputs:
+      retag_images:
+        description: >-
+          the images, `image@sha256:...` separated by spaces, to tag with this commit's SHA instead
+          of building any
+        type: string
+        default: ""
+      heldout:
+        description: plant held-out canaries before the build (`plant`) and scan the images for them (`image:heldout`)
+        type: boolean
+        default: true
+      plant:
+        description: the command that plants the canaries in the checkout
+        type: string
+        default: deploy/image-heldout.sh plant
+      builder:
+        description: >-
+          the buildx builder the build task uses, made here first with the runner's Docker Hub mirror
+          (a docker-container builder doesn't read dockerd's registry-mirrors; Docker Hub
+          rate-limited its pulls, PER-344)
+        type: string
+        default: arh-image
+      runs-on:
+        description: the runner label
+        type: string
+        default: commonhill
+      cache_key_prefix:
+        description: mise-action's cache key prefix, where the runner has no node-local tools
+        type: string
+        default: mise-uv
+      disable_tools:
+        description: MISE_DISABLE_TOOLS, the caller's tools the image tasks don't need
+        type: string
+        default: ""
+    outputs:
+      digests:
+        description: the pushed (or retagged) images, `image@sha256:...` one a line
+        value: ${{ jobs.image.outputs.digests }}
+
+jobs:
+  image:
+    runs-on: ${{ inputs.runs-on }}
+    # 30, not 20: on a loaded node the builds alone took 20 (PER-429).
+    timeout-minutes: 30
+    env:
+      MISE_DISABLE_TOOLS: ${{ inputs.disable_tools }}
+      ARH_IMAGE_CACHE: ${{ github.ref == 'refs/heads/main' && 'write' || 'read' }}
+    outputs:
+      digests: ${{ steps.digests.outputs.digests }}
+    steps:
+      # The `runner` context isn't a job env's: the digests' file is set here.
+      - run: echo "ARH_IMAGE_DIGESTS=$RUNNER_TEMP/image-digests.txt" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v7
+      - uses: commonhill/.github/actions/setup@v1
+        with: { cache_key_prefix: "${{ inputs.cache_key_prefix }}" }
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - if: inputs.retag_images != ''
+        env:
+          REFS: ${{ inputs.retag_images }}
+        run: |
+          # shellcheck disable=SC2086
+          mise run image:retag -- $REFS
+          tr ' ' '\n' <<<"$REFS" | sed '/^$/d' > "$ARH_IMAGE_DIGESTS"
+      # Held-out sets never reach an image: canaries planted in the checkout must not be in one.
+      - if: inputs.retag_images == '' && inputs.heldout
+        env:
+          PLANT: ${{ inputs.plant }}
+        run: $PLANT
+      - if: inputs.retag_images == ''
+        env:
+          BUILDER: ${{ inputs.builder }}
+        run: |
+          mirror="$(docker info --format '{{range .RegistryConfig.Mirrors}}{{.}}{{end}}')"
+          host="${mirror#*://}"
+          host="${host%/}"
+          if [[ -n "$host" ]]; then
+            printf '[registry."docker.io"]\n  mirrors = ["%s"]\n[registry."%s"]\n  http = true\n  insecure = true\n' \
+              "$host" "$host" > "$RUNNER_TEMP/buildkitd.toml"
+            docker buildx create --name "$BUILDER" --driver docker-container --driver-opt network=host \
+              --buildkitd-config "$RUNNER_TEMP/buildkitd.toml"
+          else
+            echo "::warning::the runner's dockerd has no registry mirror: Docker Hub directly"
+            docker buildx create --name "$BUILDER" --driver docker-container --driver-opt network=host
+          fi
+      - if: inputs.retag_images == ''
+        run: mise run image
+      - if: inputs.retag_images == '' && inputs.heldout
+        run: mise run image:heldout
+      - if: inputs.retag_images == ''
+        run: mise run image:push
+      - id: digests
+        run: |
+          {
+            echo "digests<<EOF"
+            cat "$ARH_IMAGE_DIGESTS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - if: inputs.retag_images == ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-digests-${{ github.run_attempt }}
+          path: ${{ env.ARH_IMAGE_DIGESTS }}
+          if-no-files-found: error

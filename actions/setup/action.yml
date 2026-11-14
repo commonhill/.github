@@ -1,0 +1,107 @@
+# SPDX-FileCopyrightText: 2026 Blazelight Pty Ltd
+# SPDX-License-Identifier: Apache-2.0
+#
+# Every Commonhill repository's setup step: `uses: commonhill/.github/actions/setup@v1`, after
+# actions/checkout, with the repository's mise.toml at the workspace's root.
+name: setup
+description: >-
+  mise and the repository's tools. On a runner whose node keeps the tools (/home/runner/mise-node,
+  a hostPath: kubernetes/arc.nix, PER-343), from there, installed once per node under a lock, mise
+  itself too (PER-429); anywhere else, from mise-action's GitHub cache.
+inputs:
+  cache_key_prefix:
+    description: mise-action's cache key prefix (a job's set of tools)
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: node
+      shell: bash
+      run: |
+        if [[ -d /home/runner/mise-node ]]; then
+          echo "local=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "local=false" >> "$GITHUB_OUTPUT"
+        fi
+    # Elsewhere, mise in the job's own directory and the tools from GitHub's cache.
+    - if: steps.node.outputs.local != 'true'
+      uses: jdx/mise-action@v5
+      with:
+        cache_key_prefix: ${{ inputs.cache_key_prefix }}
+    # On a node that keeps the tools, mise too: one pinned version per node, under the install lock.
+    # Not from github.com's releases first: every job downloading it from there made a GitHub
+    # outage fail every job (run 42465076574 and those after it: HTTP 504 in each job's setup,
+    # while GitHub's status said operational). From the release's Docker image, pinned by digest
+    # (content-addressed: the pull checks it), pulled through the runner's Docker Hub mirror; only
+    # if that fails, the release tarball from GitHub, checked against its SHA-256. mise-action's
+    # environment, as it sets it, but its shims: they stay off PATH, being every job's tools, among
+    # them some this job disabled (MISE_DISABLE_TOOLS), whose shims then fail where the runner's
+    # own would have run; `mise run` finds the job's tools itself.
+    - if: steps.node.outputs.local == 'true'
+      shell: bash
+      env:
+        MISE_VERSION: "2026.11.3"
+        MISE_IMAGE: jdxcode/mise:2026.11.3@sha256:60a4852b1632aebb032c94bfbaf8196a1088c091bfd6cfa1ce8f182ab39c7d8e
+        MISE_SHA256: 837acae6defb8c9ad74823f6e38856633bacb04c65c1ac67d952749847543bd9
+      run: |
+        node=/home/runner/mise-node
+        bin="$node/bin/mise-$MISE_VERSION"
+        from_image() {
+          local container
+          # The job's Docker daemon may still be starting beside it.
+          for _ in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 2; done
+          for try in 1 2 3; do
+            docker pull --quiet "$MISE_IMAGE" >/dev/null && break
+            [[ $try == 3 ]] && return 1
+            sleep 10
+          done
+          container="$(docker create "$MISE_IMAGE")" || return 1
+          docker cp "$container:/usr/local/bin/mise" "$bin.tmp"
+          local copied=$?
+          docker rm "$container" >/dev/null
+          return $copied
+        }
+        from_github() {
+          local tarball unpacked
+          tarball="$(mktemp)"
+          unpacked="$(mktemp -d)"
+          curl --fail --silent --show-error --location --retry 8 --retry-all-errors --retry-delay 5 \
+            --output "$tarball" \
+            "https://github.com/jdx/mise/releases/download/v$MISE_VERSION/mise-v$MISE_VERSION-linux-x64.tar.gz" \
+            && echo "$MISE_SHA256  $tarball" | sha256sum --check --quiet \
+            && tar -xzf "$tarball" -C "$unpacked" \
+            && cp "$unpacked/mise/bin/mise" "$bin.tmp"
+          local got=$?
+          rm -rf "$tarball" "$unpacked"
+          return $got
+        }
+        if [[ ! -x "$bin" ]]; then
+          mkdir -p "$node/bin"
+          (
+            flock 9
+            if [[ ! -x "$bin" ]]; then
+              if from_image; then
+                echo "mise $MISE_VERSION from $MISE_IMAGE"
+              else
+                echo "::warning::mise $MISE_VERSION: its image failed, from GitHub's release instead"
+                from_github || { echo "mise $MISE_VERSION: neither its image nor its release" >&2; exit 1; }
+              fi
+              chmod 0755 "$bin.tmp" && mv "$bin.tmp" "$bin"
+            fi
+          ) 9>"$node/.install.lock"
+        fi
+        mkdir -p "$RUNNER_TEMP/mise-bin"
+        ln -sf "$bin" "$RUNNER_TEMP/mise-bin/mise"
+        echo "$RUNNER_TEMP/mise-bin" >> "$GITHUB_PATH"
+        {
+          echo "MISE_DATA_DIR=$node"
+          echo "MISE_YES=1"
+          echo "MISE_LOG_LEVEL=info"
+          echo "MISE_TRUSTED_CONFIG_PATHS=$GITHUB_WORKSPACE"
+        } >> "$GITHUB_ENV"
+        "$bin" --version
+    # Two mise installs of a version at once can race (jdx/mise discussion #9324): one at a time
+    # on a node. Once installed, a version is only read.
+    - if: steps.node.outputs.local == 'true'
+      shell: bash
+      run: flock /home/runner/mise-node/.install.lock mise install

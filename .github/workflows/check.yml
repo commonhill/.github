@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: 2026 Blazelight Pty Ltd
+# SPDX-License-Identifier: Apache-2.0
+#
+# A commit's one required check (PER-477): green only when each job it gathers ran and passed if the
+# run wanted it, or else was skipped. Which jobs a run wants is either fixed (`true`/`false`) or the
+# gate job's output (core's `changes`: a branch that changed only docs runs a part; main's commit
+# whose tree a passed PR head had runs nothing again, ci/twin.sh). A job skipped because a job it
+# needs failed is a failure here, and so is a gathered job missing from `wanted`.
+#
+#   check:
+#     if: always()
+#     needs: [changes, static, test-rest, tests-docker, vm-image, image]
+#     uses: commonhill/.github/.github/workflows/check.yml@v1
+#     with:
+#       needs: ${{ toJSON(needs) }}
+#       wanted: '{"static": "static", "test-rest": "rest", "tests-docker": "docker", "vm-image": "vm", "image": "image"}'
+on:
+  workflow_call:
+    inputs:
+      needs:
+        description: the caller's `toJSON(needs)`
+        type: string
+        required: true
+      wanted:
+        description: >-
+          a JSON object: each gathered job (but the gate) -> true, false, or the name of the gate's
+          output that says ("true" or anything else) whether the run wants it
+        type: string
+        required: true
+      gate:
+        description: the job whose outputs decide; it must have passed. Empty when every job is fixed
+        type: string
+        default: changes
+      runs-on:
+        description: the runner label
+        type: string
+        default: commonhill
+
+jobs:
+  check:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 5
+    steps:
+      - env:
+          NEEDS: ${{ inputs.needs }}
+          WANTED: ${{ inputs.wanted }}
+          GATE: ${{ inputs.gate }}
+        run: |
+          ok=true
+          expect() {
+            local job=$1 wanted=$2 result
+            result="$(jq -r --arg job "$job" '.[$job].result // "missing"' <<<"$NEEDS")"
+            echo "$job: $([[ $wanted == true ]] && echo wanted || echo not wanted), $result"
+            if [[ $wanted == true && $result != success ]] || [[ $wanted != true && $result != skipped ]]; then
+              ok=false
+            fi
+          }
+          if [[ -n "$GATE" ]]; then
+            expect "$GATE" true
+            echo "mode: $(jq -r --arg gate "$GATE" '.[$gate].outputs.mode // "-"' <<<"$NEEDS")"
+          fi
+          while read -r job; do
+            if ! jq -e --arg job "$job" 'has($job)' <<<"$WANTED" >/dev/null; then
+              echo "$job: gathered but not in \`wanted\`"
+              ok=false
+              continue
+            fi
+            # true/false as given; a string names the gate's output (unset: not wanted).
+            wanted="$(jq -r --arg job "$job" --arg gate "$GATE" --argjson needs "$NEEDS" '
+              .[$job] as $w
+              | if ($w | type) == "boolean" then $w
+                else ($needs[$gate].outputs[$w] // "false") end' <<<"$WANTED")"
+            expect "$job" "$wanted"
+          done < <(jq -r --arg gate "$GATE" 'keys[] | select(. != $gate)' <<<"$NEEDS")
+          while read -r job; do
+            echo "$job: in \`wanted\` but not gathered (not in needs)"
+            ok=false
+          done < <(jq -r --argjson needs "$NEEDS" 'keys[] as $job | select($needs | has($job) | not) | $job' <<<"$WANTED")
+          $ok
