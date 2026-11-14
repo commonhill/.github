@@ -32,7 +32,7 @@ on:
         type: string
         default: changes
       runs-on:
-        description: the runner label
+        description: "the runner label: the repository's ARC set (commonhill, commonhill-sdk, commonhill-templates, commonhill-hosted), or ubuntu-latest"
         type: string
         default: commonhill
 

@@ -36,7 +36,7 @@ on:
         type: number
         default: 90
       runs-on:
-        description: the runner label
+        description: "the runner label: the repository's ARC set (commonhill, commonhill-sdk, commonhill-templates, commonhill-hosted), or ubuntu-latest"
         type: string
         default: commonhill
       cache_key_prefix:

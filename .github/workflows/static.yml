@@ -20,7 +20,7 @@ on:
         type: boolean
         default: true
       runs-on:
-        description: the runner label (`commonhill` is the org's ARC scale set; `ubuntu-latest` for a fork's PR)
+        description: "the runner label: the repository's ARC set (commonhill, commonhill-sdk, commonhill-templates, commonhill-hosted), or ubuntu-latest"
         type: string
         default: commonhill
       cache_key_prefix:
