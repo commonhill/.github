@@ -5,12 +5,14 @@
 # checkout at `core_ref`, then `hill local add DIR [--heldout FILE]`, which fails unless the report
 # passes and the project goes live. Templates run it for each kind; any author's project can too.
 # The project directory is copied out of the caller's checkout and committed as a repository of its
-# own (its base), as `hill local add` takes it.
+# own (its base), as `hill local add` takes it. The held-out file keeps its name (the grader reads
+# it by that name from /eval). A local server fetches no upstream, so a project whose `upstream`
+# is a placeholder (a template's) passes `without_upstream: true` and runs as its own base.
 #
 #   readiness:
-#     strategy: { matrix: { kind: [count, quality, head-to-head, open] } }
+#     strategy: { matrix: { kind: [count, quality, head-to-head] } }
 #     uses: commonhill/.github/.github/workflows/readiness.yml@v1
-#     with: { directory: "${{ matrix.kind }}", heldout: "${{ matrix.kind }}-heldout/heldout.json" }
+#     with: { directory: "${{ matrix.kind }}", heldout: "${{ matrix.kind }}/sample/items.jsonl", without_upstream: true }
 #     secrets: { core_token: "${{ secrets.CORE_TOKEN }}" }
 on:
   workflow_call:
@@ -23,6 +25,10 @@ on:
         description: its held-out set, a file of the caller's repository; empty for an open project
         type: string
         default: ""
+      without_upstream:
+        description: take `upstream` out of the copy's autoresearch.toml (a local server fetches none)
+        type: boolean
+        default: false
       core_repository:
         description: the Commonhill core to run
         type: string
@@ -71,6 +77,7 @@ jobs:
       - env:
           DIRECTORY: ${{ inputs.directory }}
           HELDOUT: ${{ inputs.heldout }}
+          WITHOUT_UPSTREAM: ${{ inputs.without_upstream }}
           GIT_AUTHOR_NAME: commonhill-ci
           GIT_AUTHOR_EMAIL: ci@commonhill.org
           GIT_COMMITTER_NAME: commonhill-ci
@@ -79,8 +86,12 @@ jobs:
           project="$RUNNER_TEMP/project"
           mkdir -p "$project"
           cp -a ".project/$DIRECTORY/." "$project/"
+          if [[ "$WITHOUT_UPSTREAM" == true ]]; then
+            sed -i '/^upstream *=/d' "$project/autoresearch.toml"
+          fi
           if [[ -n "$HELDOUT" ]]; then
-            cp ".project/$HELDOUT" "$RUNNER_TEMP/heldout"
+            mkdir -p "$RUNNER_TEMP/heldout"
+            cp ".project/$HELDOUT" "$RUNNER_TEMP/heldout/"
           fi
           rm -rf .project
           git -C "$project" init --quiet --initial-branch main
@@ -93,7 +104,7 @@ jobs:
         shell: mise exec -- bash -e {0}
         run: |
           if [[ -n "$HELDOUT" ]]; then
-            uv run hill local add "$RUNNER_TEMP/project" --heldout "$RUNNER_TEMP/heldout"
+            uv run hill local add "$RUNNER_TEMP/project" --heldout "$RUNNER_TEMP/heldout/${HELDOUT##*/}"
           else
             uv run hill local add "$RUNNER_TEMP/project"
           fi
