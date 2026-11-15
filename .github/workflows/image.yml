@@ -118,8 +118,8 @@ jobs:
             cat "$ARH_IMAGE_DIGESTS"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
-      - if: inputs.retag_images == ''
-        uses: actions/upload-artifact@v7
+      # Built or retagged, the run's images by digest: release.yml reads them from this artifact.
+      - uses: actions/upload-artifact@v7
         with:
           name: image-digests-${{ github.run_attempt }}
           path: ${{ env.ARH_IMAGE_DIGESTS }}
