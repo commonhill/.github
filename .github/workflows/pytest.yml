@@ -101,12 +101,19 @@ jobs:
       ARH_PG_DURABLE: "off"
       # The tests' pip, uv and cargo downloads through the package proxy (deploy/proxy), as a build
       # VM's: an empty Docker daemon's builds otherwise fetch everything over the WAN (PER-304,
-      # PER-457). The root conftest's `mirror_build_args` passes them to every build.
+      # PER-457). The root conftest's `mirror_build_args` passes them to every build. Each under
+      # both names while the arh rename is under way: the testkit reads COMMONHILL_* from the sdk's
+      # release 11, ARH_* before it; the ARH_* lines go once every caller's testkit is release 11.
       ARH_TEST_PIP_INDEX: ${{ inputs.mirrors && 'http://package-proxy.arh-proxy.svc.cluster.local:8080/pypi/simple/' || '' }}
       ARH_TEST_PYPI_FILES: ${{ inputs.mirrors && 'http://package-proxy.arh-proxy.svc.cluster.local:8080/pypi/files/' || '' }}
       ARH_TEST_CARGO_MIRROR: ${{ inputs.mirrors && 'sparse+http://package-proxy.arh-proxy.svc.cluster.local:8080/crates/index/' || '' }}
       ARH_TEST_IMAGE_CACHE: ${{ inputs.image_cache && format('ghcr.io/{0}/ci-cache', github.repository) || '' }}
       ARH_TEST_IMAGE_CACHE_PUSH: ${{ inputs.image_cache && '1' || '' }}
+      COMMONHILL_TEST_PIP_INDEX: ${{ inputs.mirrors && 'http://package-proxy.arh-proxy.svc.cluster.local:8080/pypi/simple/' || '' }}
+      COMMONHILL_TEST_PYPI_FILES: ${{ inputs.mirrors && 'http://package-proxy.arh-proxy.svc.cluster.local:8080/pypi/files/' || '' }}
+      COMMONHILL_TEST_CARGO_MIRROR: ${{ inputs.mirrors && 'sparse+http://package-proxy.arh-proxy.svc.cluster.local:8080/crates/index/' || '' }}
+      COMMONHILL_TEST_IMAGE_CACHE: ${{ inputs.image_cache && format('ghcr.io/{0}/ci-cache', github.repository) || '' }}
+      COMMONHILL_TEST_IMAGE_CACHE_PUSH: ${{ inputs.image_cache && '1' || '' }}
       # No bytecode beside the sources: a build context with __pycache__ in it has another key every run.
       PYTHONDONTWRITEBYTECODE: ${{ inputs.image_cache && '1' || '' }}
     steps:

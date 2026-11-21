@@ -9,5 +9,6 @@ echo "shard=$ARH_TEST_SHARD durations=$ARH_TEST_DURATIONS_OUT args=$*"
 [[ "$ARH_TEST_SHARD" =~ ^[12]/2$ ]]
 [[ "$ARH_TEST_DURATIONS_OUT" == "selftest-durations-${ARH_TEST_SHARD%/2}.json" ]]
 [[ -z "${ARH_TEST_PIP_INDEX:-}" && -z "${ARH_TEST_IMAGE_CACHE:-}" ]]
+[[ -z "${COMMONHILL_TEST_PIP_INDEX:-}" && -z "${COMMONHILL_TEST_IMAGE_CACHE:-}" ]]
 [[ "$*" == "one two" ]]
 echo '{}' > "$ARH_TEST_DURATIONS_OUT"
